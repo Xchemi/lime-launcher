@@ -29,6 +29,20 @@ async function ensureVanilla(mc) {
   const f = P('versions', mc, mc + '.json');
   if (!fs.existsSync(f)) { const m = await J(VM); const e = m.versions.find(v => v.id === mc); if (!e) throw new Error('Нет версии ' + mc); wj(f, await J(e.url)) }
   await dl(rj(f).downloads.client.url, P('versions', mc, mc + '.jar'));
+  return rj(f);
+}
+async function ensureJava(base, custom) {
+  if (custom && custom !== 'java') return custom;
+  try {
+    const comp = base.javaVersion?.component || 'jre-legacy', dir = P('runtime', comp), exe = path.join(dir, 'bin', 'java.exe');
+    if (fs.existsSync(path.join(dir, '.ok'))) return exe;
+    prog('Java…', 0);
+    const all = await J('https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json');
+    const mf = await J(all['windows-x64'][comp][0].manifest.url);
+    const files = Object.entries(mf.files).filter(([, f]) => f.type === 'file'); let n = 0;
+    await pool(files, 12, async ([rel, f]) => { await dl(f.downloads.raw.url, path.join(dir, rel)); if (++n % 20 === 0) prog('Java', n / files.length * 100) });
+    fs.writeFileSync(path.join(dir, '.ok'), '1'); return exe;
+  } catch (er) { send('log', 'Не удалось скачать Java: ' + er.message + ' — использую системную\n'); return 'java'; }
 }
 async function ensureLoader(p, java) {
   await ensureVanilla(p.mc);
@@ -74,7 +88,12 @@ async function installMod(prof, pid, seen = new Set()) {
   if (!vs.length) throw new Error(`Нет версии мода для ${prof.mc} / ${prof.loader}`);
   const f = vs[0].files.find(x => x.primary) || vs[0].files[0];
   await dl(f.url, P('instances', prof.name, 'mods', f.filename));
-  for (const d of vs[0].dependencies) if (d.dependency_type === 'required' && d.project_id) await installMod(prof, d.project_id, seen);
+  send('log', 'Мод установлен: ' + f.filename + '\n');
+  for (const d of vs[0].dependencies) if (d.dependency_type === 'required') {
+    let id = d.project_id; if (!id && d.version_id) id = (await J(`https://api.modrinth.com/v2/version/${d.version_id}`)).project_id;
+    if (id) await installMod(prof, id, seen);
+  }
+  return seen.size;
 }
 
 ipcMain.handle('get', () => rj(P('state.json')) || {});
@@ -94,7 +113,8 @@ ipcMain.handle('ely', async (e, { u, p }) => {
 ipcMain.handle('play', async (e, { prof, server, st }) => {
   try {
     const s = st.settings, gd = P('instances', prof.name); fs.mkdirSync(gd, { recursive: true });
-    const id = await ensureLoader(prof, s.java), j = load(id), nat = P('natives', id); fs.mkdirSync(nat, { recursive: true });
+    const base = await ensureVanilla(prof.mc), java = await ensureJava(base, s.java);
+    const id = await ensureLoader(prof, java), j = load(id), nat = P('natives', id); fs.mkdirSync(nat, { recursive: true });
     const seen = new Set(), libs = [], cp = []; let n = 0;
     for (const l of j.libraries) { if (!allow(l.rules)) continue; const k = l.name.split(':'), key = k[0] + k[1] + (k[3] || ''); if (!seen.has(key)) { seen.add(key); libs.push(l) } }
     await pool(libs, 8, async (l, i) => {
@@ -125,7 +145,7 @@ ipcMain.handle('play', async (e, { prof, server, st }) => {
     if (server) { const [h, p = '25565'] = server.split(':'); game.push(...((prof.mc.split('.')[0] !== '1' || +prof.mc.split('.')[1] >= 20) ? ['--quickPlayMultiplayer', server] : ['--server', h, '--port', p])) }
     const args = [`-Xmx${s.ram}M`, ...jv, ...flat(j.arguments.jvm), j.mainClass, ...game];
     prog('Игра запущена', 100); send('log', `\n▶ ${name} → ${id}\n`);
-    const c = spawn(s.java, args, { cwd: gd });
+    const c = spawn(java, args, { cwd: gd, windowsHide: true });
     c.stdout.on('data', d => send('log', d + '')); c.stderr.on('data', d => send('log', d + ''));
     c.on('error', er => send('log', 'Java не найдена: ' + er.message + '\n'));
     c.on('close', k => { prog('Игра закрыта (код ' + k + ')', 0) });
