@@ -1,0 +1,19 @@
+{
+  "name": "lime-launcher",
+  "version": "1.0.0",
+  "description": "Lime Launcher",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "dependencies": { "adm-zip": "^0.5.16" },
+  "devDependencies": { "electron": "^31.7.7", "electron-builder": "^24.13.3" },
+  "build": {
+    "appId": "app.lime.launcher",
+    "productName": "Lime Launcher",
+    "files": ["main.js", "index.html"],
+    "win": { "target": "nsis" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+  }
+}
