@@ -5,12 +5,15 @@ permissions:
 jobs:
   win:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - run: npm version 1.0.${{ github.run_number }} --no-git-tag-version
-      - run: npm install
-      - run: npm run dist -- --publish always
+      - run: for i in 1 2 3; do npm install && exit 0; sleep 20; done; exit 1
+      - run: for i in 1 2 3; do npm run dist -- --publish always && exit 0; sleep 20; done; exit 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
