@@ -2,18 +2,22 @@
   "name": "lime-launcher",
   "version": "1.0.0",
   "description": "Lime Launcher",
+  "author": "Xchemi",
+  "license": "MIT",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win nsis"
   },
-  "dependencies": { "adm-zip": "^0.5.16" },
+  "dependencies": { "adm-zip": "^0.5.16", "electron-updater": "^6.3.9" },
   "devDependencies": { "electron": "^31.7.7", "electron-builder": "^24.13.3" },
   "build": {
     "appId": "app.lime.launcher",
     "productName": "Lime Launcher",
-    "files": ["main.js", "index.html"],
-    "win": { "target": "nsis" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+    "files": ["main.js", "index.html", "icon.png"],
+    "copyright": "© 2026 Xchemi",
+    "publish": [{ "provider": "github", "owner": "Xchemi", "repo": "lime-launcher", "releaseType": "release" }],
+    "win": { "target": "nsis", "icon": "icon.ico" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "shortcutName": "Lime Launcher", "uninstallDisplayName": "Lime Launcher" }
   }
 }
