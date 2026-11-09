@@ -303,6 +303,44 @@ ipcMain.handle('modmeta', async (e, n) => {
   return out;
 });
 ipcMain.handle('addjarpaths', (e, { n, paths }) => { const d = P('instances', n, 'mods'); fs.mkdirSync(d, { recursive: true }); paths.filter(f => /\.jar$/i.test(f)).forEach(f => fs.copyFileSync(f, path.join(d, path.basename(f)))); return paths.length });
+const KW = [[/фпс|fps|лаг|оптимиз|тормоз|performance/i, ['sodium', 'lithium', 'ferritecore']], [/шейдер|shader|графи|красив/i, ['iris shaders', 'continuity']], [/карт|map|minimap/i, ['xaero minimap', 'journeymap']], [/инвентар|inventory|сортир/i, ['inventory profiles next', 'mouse tweaks']], [/рецепт|recipe|jei|emi/i, ['emi', 'jei']], [/еда|food|ферм|farm/i, ['farmers delight']], [/оруж|weapon|меч|sword|бой|combat/i, ['better combat']], [/моб|mob|животн|animal/i, ['alexs mobs', 'naturalist']], [/магия|magic/i, ['ars nouveau']], [/механизм|create|техн|tech/i, ['create']], [/звук|sound/i, ['presence footsteps', 'sound physics remastered']], [/интерфейс|ui|hud/i, ['appleskin', 'jade']], [/пещер|cave|подзем/i, ['yungs better caves']], [/мир|world|биом|biome|генерац/i, ['terralith', 'biomes o plenty']], [/мультиплеер|друз|сервер|multiplayer|голос|voice/i, ['simple voice chat']]];
+ipcMain.handle('aisearch', async (e, { q, mc, loader, key }) => {
+  let queries = [];
+  if (key) {
+    try {
+      const r = await J('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-haiku-5-5', max_tokens: 400, messages: [{ role: 'user', content: `Minecraft ${mc}, loader ${loader}. The player wrote (any language): "${q}". Reply with ONLY a JSON array of 3 to 6 short English search queries (1-3 words each) for the Modrinth mod search: well-known mod names or topics that fit the request.` }] }) });
+      queries = JSON.parse(r.content.map(c => c.text || '').join('').replace(/```json|```/g, '').trim());
+    } catch (er) { throw new Error('ИИ недоступен: ' + er.message + ' (проверьте ключ в настройках)') }
+  } else { for (const [re, qs] of KW) if (re.test(q)) queries.push(...qs); if (!queries.length) queries = [q] }
+  const f = [['project_type:mod']]; if (mc) f.push([`versions:${mc}`]); if (loader && loader !== 'vanilla') f.push([`categories:${loader}`]);
+  const res = await Promise.all(queries.slice(0, 8).map(s => J('https://api.modrinth.com/v2/search?' + new URLSearchParams({ query: s, facets: JSON.stringify(f), limit: '4' })).catch(() => ({ hits: [] }))));
+  const seen = new Set(), hits = []; for (const r of res) for (const h of r.hits) if (!seen.has(h.project_id)) { seen.add(h.project_id); hits.push(h) }
+  return { hits, queries, via: key ? 'ИИ (Claude)' : 'умный поиск' };
+});
+ipcMain.handle('packsearch', (e, { q, mc, loader }) => {
+  const f = [['project_type:modpack']]; if (mc) f.push([`versions:${mc}`]); if (loader) f.push([`categories:${loader}`]);
+  return J('https://api.modrinth.com/v2/search?' + new URLSearchParams({ query: q || '', facets: JSON.stringify(f), limit: '24', index: q ? 'relevance' : 'downloads' }));
+});
+ipcMain.handle('packinstall', async (e, { id, existing }) => {
+  const v = (await J(`https://api.modrinth.com/v2/project/${id}/version`))[0], pj = await J(`https://api.modrinth.com/v2/project/${id}`);
+  if (!v) throw new Error('У сборки нет версий');
+  const f = v.files.find(x => x.primary) || v.files[0], tmp = P('tmp', f.filename); fs.rmSync(tmp, { force: true }); await dl(f.url, tmp);
+  const z = new AdmZip(tmp), ie = z.getEntry('modrinth.index.json'); if (!ie) throw new Error('Это не .mrpack сборка');
+  const idx = JSON.parse(ie.getData().toString('utf8')), dep = idx.dependencies || {}, mc = dep.minecraft;
+  const loader = dep['fabric-loader'] ? 'fabric' : dep.neoforge ? 'neoforge' : dep.forge ? 'forge' : dep['quilt-loader'] ? 'quilt' : 'vanilla';
+  if (loader === 'quilt') throw new Error('Quilt пока не поддерживается');
+  if (/^1\./.test(mc) && +mc.split('.')[1] < 16) throw new Error('Версии ниже 1.16 не поддерживаются (' + mc + ')');
+  const base = pj.title.replace(/[^\w\- а-яА-Я]/g, '').trim() || 'Pack'; let name = base, k = 2; while (existing.includes(name)) name = base + ' ' + k++;
+  const dst = P('instances', name); fs.mkdirSync(dst, { recursive: true });
+  const safe = rel => { const p = path.resolve(dst, rel); if (!p.startsWith(dst + path.sep)) throw new Error('Небезопасный путь: ' + rel); return p };
+  for (const en of z.getEntries()) { const mm = en.entryName.match(/^(?:client-)?overrides\/(.+)$/); if (mm && !en.isDirectory) { const p = safe(mm[1]); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, en.getData()) } }
+  const files = (idx.files || []).filter(x => !x.env || x.env.client !== 'unsupported'), fail = []; let ok = 0;
+  await pool(files, 8, async x => { try { const p = safe(x.path); fs.mkdirSync(path.dirname(p), { recursive: true }); await dl(x.downloads[0], p); if (x.hashes && x.hashes.sha1 && sha1(p) !== x.hashes.sha1) { fs.rmSync(p, { force: true }); throw new Error('hash') } ok++; prog('Сборка', ok / files.length * 100) } catch { fail.push(x.path) } });
+  return { name, mc, loader, ok, fail };
+});
+ipcMain.handle('rename', (e, { o, n }) => { const a = P('instances', o), b = P('instances', n); if (fs.existsSync(b)) throw new Error('Такое имя уже есть'); if (fs.existsSync(a)) fs.renameSync(a, b); return true });
+ipcMain.handle('dupbuild', (e, { o, n }) => { const a = P('instances', o); if (fs.existsSync(a)) fs.cpSync(a, P('instances', n), { recursive: true }); return true });
+ipcMain.handle('backup', (e, n) => { const s = P('instances', n, 'saves'); if (!fs.existsSync(s)) return 0; const d = new Date(), t = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}_${d.getHours()}-${d.getMinutes()}`; fs.cpSync(s, P('instances', n, 'backups', 'saves-' + t), { recursive: true }); return 1 });
 ipcMain.handle('tg', () => shell.openExternal('https://t.me/limelauncher'));
 ipcMain.handle('addjars', async (e, n) => {
   const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Minecraft mods', extensions: ['jar'] }] });
